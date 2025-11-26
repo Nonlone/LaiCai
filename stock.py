@@ -5,6 +5,7 @@ from typing import List, Optional
 from dataclasses import dataclass
 from datetime import datetime
 import time
+import random
 
 
 @dataclass
@@ -29,10 +30,12 @@ def sync_stock_basic_info(db_path: str = "stocks.db") -> List[StockBasicInfo]:
     stock_objects: List[StockBasicInfo] = []
     # 定义表名常量
     TABLE_NAME = "raw_basic_info"
+    # 生成临时表名，格式为原表名-随机数（符合 db.py 中的处理逻辑）
+    TEMP_TABLE_NAME = f"{TABLE_NAME}-{random.randint(100, 999)}"
     
     try:
-        # 获取数据库连接
-        conn = get_db_connection(db_path, TABLE_NAME)
+        # 获取数据库连接，使用临时表名
+        conn = get_db_connection(db_path, TEMP_TABLE_NAME)
         cursor = conn.cursor()
         
         # 使用 akshare 获取所有股票代码和名称
@@ -55,14 +58,25 @@ def sync_stock_basic_info(db_path: str = "stocks.db") -> List[StockBasicInfo]:
             stock_data.append((code, name, market))
             stock_objects.append(StockBasicInfo(code=code, name=name, market=market))
         
-        # 批量插入或更新数据
+        # 批量插入或更新数据到临时表
         cursor.executemany(f'''
-            INSERT OR REPLACE INTO {TABLE_NAME} (code, name, market)
+            INSERT OR REPLACE INTO "{TEMP_TABLE_NAME}" (code, name, market)
             VALUES (?, ?, ?)
         ''', stock_data)
         
         conn.commit()
-        print(f"成功同步 {len(stock_data)} 只股票的基本信息到数据库")
+        print(f"成功同步 {len(stock_data)} 只股票的基本信息到临时表 {TEMP_TABLE_NAME}")
+        
+        # 将临时表重命名为正式表名
+        try:
+            # 先删除已存在的正式表（如果存在）
+            cursor.execute(f'DROP TABLE IF EXISTS "{TABLE_NAME}"')
+            # 将临时表重命名为正式表名
+            cursor.execute(f'ALTER TABLE "{TEMP_TABLE_NAME}" RENAME TO "{TABLE_NAME}"')
+            conn.commit()
+            print(f"成功将临时表 {TEMP_TABLE_NAME} 重命名为 {TABLE_NAME}")
+        except sqlite3.Error as e:
+            print(f"重命名表时发生错误: {e}")
         
     except Exception as e:
         print(f"同步股票基本信息时发生错误: {e}")
@@ -83,10 +97,12 @@ def sync_stock_share_change(db_path: str, stocks: List[StockBasicInfo]) -> None:
         stocks (List[StockBasicInfo]): 股票基本信息对象数组
     """
     TABLE_NAME = "raw_share_change"
+    # 生成临时表名，格式为原表名-随机数（符合 db.py 中的处理逻辑）
+    TEMP_TABLE_NAME = f"{TABLE_NAME}-{random.randint(100, 999)}"
     
     try:
-        # 获取数据库连接
-        conn = get_db_connection(db_path, TABLE_NAME)
+        # 获取数据库连接，使用临时表名
+        conn = get_db_connection(db_path, TEMP_TABLE_NAME)
         cursor = conn.cursor()
         
         total_count = 0
@@ -118,9 +134,9 @@ def sync_stock_share_change(db_path: str, stocks: List[StockBasicInfo]) -> None:
                     )
                     share_change_data.append(row_data)
                 
-                # 批量插入数据
+                # 批量插入数据到临时表
                 cursor.executemany(f'''
-                    INSERT OR REPLACE INTO {TABLE_NAME} (
+                    INSERT OR REPLACE INTO "{TEMP_TABLE_NAME}" (
                         code, name, change_date, announce_date, total
                     ) VALUES (
                         ?, ?, ?, ?, ?
@@ -136,7 +152,18 @@ def sync_stock_share_change(db_path: str, stocks: List[StockBasicInfo]) -> None:
                 continue
         
         conn.commit()
-        print(f"成功同步 {total_count} 条股本变动记录到数据库，{error_count} 只股票处理失败")
+        print(f"成功同步 {total_count} 条股本变动记录到临时表 {TEMP_TABLE_NAME}，{error_count} 只股票处理失败")
+        
+        # 将临时表重命名为正式表名
+        try:
+            # 先删除已存在的正式表（如果存在）
+            cursor.execute(f'DROP TABLE IF EXISTS "{TABLE_NAME}"')
+            # 将临时表重命名为正式表名
+            cursor.execute(f'ALTER TABLE "{TEMP_TABLE_NAME}" RENAME TO "{TABLE_NAME}"')
+            conn.commit()
+            print(f"成功将临时表 {TEMP_TABLE_NAME} 重命名为 {TABLE_NAME}")
+        except sqlite3.Error as e:
+            print(f"重命名表时发生错误: {e}")
         
     except Exception as e:
         print(f"同步股票股本变动数据时发生错误: {e}")
@@ -171,9 +198,4 @@ def sync_stock(db_path: str = "stocks.db", batch_size: int = 50) -> None:
 
 # 使用示例
 if __name__ == "__main__":
-    stocks = sync_stock_basic_info()
-    print(f"\n返回了 {len(stocks)} 个股票对象")
-    if stocks:
-        print("前5个股票对象:")
-        for stock in stocks[:5]:
-            print(f"  代码: {stock.code}, 名称: {stock.name}, 市场: {stock.market}")
+   sync_stock()
