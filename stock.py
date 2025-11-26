@@ -116,6 +116,7 @@ def sync_stock_share_change(db_path: str = "stocks.db", stocks: List[StockBasicI
             cursor = conn.cursor()
             
             total_count = 0
+            error_count = 0
             
             # 处理每只股票的股本变动数据
             for stock in stocks:
@@ -129,9 +130,10 @@ def sync_stock_share_change(db_path: str = "stocks.db", stocks: List[StockBasicI
                     # 准备插入数据
                     share_change_data = []
                     for _, row in share_change_df.iterrows():
+                        # 安全地获取各字段值，如果字段不存在则使用默认值
                         row_data = (
                             stock.code,  # code 字段
-                            row.get('证券简称'),  # name 字段
+                            row.get('证券简称', ''),  # name 字段，如果找不到则置空
                             row.get('变动日期', ''),  # change_date 字段，如果找不到则置空
                             row.get('公告日期', ''),  # announce_date 字段，如果找不到则置空
                             row.get('总股本')   # total 字段
@@ -150,11 +152,18 @@ def sync_stock_share_change(db_path: str = "stocks.db", stocks: List[StockBasicI
                     total_count += len(share_change_data)
                     
                 except Exception as e:
+                    error_count += 1
                     print(f"获取股票 {stock.code} 的股本变动数据时发生错误: {e}")
+                    # 继续处理下一个股票而不是中断整个过程
                     continue
+                finally:
+                    # 每次请求后等待1秒，减轻服务器压力
+                    time.sleep(1)
             
             conn.commit()
             print(f"成功同步 {total_count} 条股本变动记录到临时表 {TEMP_TABLE_NAME}")
+            if error_count > 0:
+                print(f"处理过程中有 {error_count} 只股票发生错误")
             
             # 将临时表重命名为正式表名
             try:
