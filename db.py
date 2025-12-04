@@ -149,59 +149,44 @@ def get_db_connection(db_path: str, table_name: str) -> sqlite3.Connection:
             print("使用默认建表语句...")
             cursor = conn.cursor()
             
-            # 根据不同的表名创建不同的表结构
-            if "basic_info" in table_name:
-                # 股票基本信息表
-                cursor.execute(f'''
-                    CREATE TABLE IF NOT EXISTS "{table_name}" (
-                        code TEXT PRIMARY KEY,
-                        name TEXT NOT NULL,
-                        market TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-                
-                # 创建索引提高查询效率
-                cursor.execute(f'''
-                    CREATE INDEX IF NOT EXISTS idx_stock_code 
-                    ON "{table_name}"(code)
-                ''')
-            elif "share_change" in table_name:
-                # 股票股本变动表
-                cursor.execute(f'''
-                    CREATE TABLE IF NOT EXISTS "{table_name}" (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        code TEXT NOT NULL,
-                        name TEXT,
-                        change_date TEXT,
-                        announce_date TEXT,
-                        total REAL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-                
-                # 创建索引提高查询效率
-                cursor.execute(f'''
-                    CREATE INDEX IF NOT EXISTS idx_raw_share_change_code 
-                    ON "{table_name}"(code)
-                ''')
-                cursor.execute(f'''
-                    CREATE INDEX IF NOT EXISTS idx_raw_share_change_change_date 
-                    ON "{table_name}"(change_date)
-                ''')
-            else:
-                # 默认表结构
-                cursor.execute(f'''
-                    CREATE TABLE IF NOT EXISTS "{table_name}" (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-            
             conn.commit()
             print("数据库表创建完成")
         
     return conn
+
+
+
+def drop_tables_with_numeric_suffix(conn: sqlite3.Connection) -> None:
+    """
+    删除数据库中带有数字后缀的表
+    
+    Args:
+        conn (sqlite3.Connection): 数据库连接对象
+    """
+    cursor = conn.cursor()
+    
+    # 获取所有表名
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = cursor.fetchall()
+    
+    # 筛选出带有数字后缀的表（格式为：表名-数字）
+    tables_to_drop = []
+    for table in tables:
+        table_name = table[0]
+        # 使用正则表达式匹配带有数字后缀的表名（例如：tablename-123）
+        if re.match(r'^.+-\d+$', table_name):
+            tables_to_drop.append(table_name)
+    
+    # 删除这些表
+    for table_name in tables_to_drop:
+        print(f"正在删除表: {table_name}")
+        cursor.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+    
+    conn.commit()
+    if tables_to_drop:
+        print(f"已删除 {len(tables_to_drop)} 个带有数字后缀的表: {tables_to_drop}")
+    else:
+        print("没有找到带有数字后缀的表")
 
 # 使用示例
 if __name__ == "__main__":
@@ -213,5 +198,8 @@ if __name__ == "__main__":
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
     tables = cursor.fetchall()
     print("当前数据库中的表:", [table[0] for table in tables])
+
+    # 测试删除临时表
+    drop_tables_with_numeric_suffix(conn)
     
     conn.close()
