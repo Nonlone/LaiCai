@@ -209,3 +209,4 @@ __marimo__/
 # Database files
 stocks.db
 *.db
+stocks.db-journal
