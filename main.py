@@ -17,27 +17,24 @@ def calculate_dividend_yield(symbol):
         stock_name = stock_info['名称'].iloc[0]
 
         # 2. 获取分红数据
-        dividend_data = ak.stock_dividend(symbol=symbol)
+        dividend_data = ak.stock_fhps_detail_em(symbol=symbol)
         if dividend_data.empty:
             print(f"股票 {symbol} 无分红历史")
             return None
 
         # 3. 获取最新分红信息
         latest_dividend = dividend_data.iloc[0]
-        dividend_per_share = latest_dividend['每股派息(元)']
+        dividend_per_share = latest_dividend['现金分红-现金分红比例']
 
         # 4. 计算股息率
-        if dividend_per_share > 0 and current_price > 0:
-            dividend_yield = (dividend_per_share / current_price) * 100
-        else:
-            dividend_yield = 0
+        dividend_yield = latest_dividend['现金分红-股息率']
 
         result = {
             '股票代码': symbol,
             '股票名称': stock_name,
             '当前股价': current_price,
-            '最新每股分红': dividend_per_share,
-            '计算股息率': f"{dividend_yield:.2f}%",
+            '最新每股现金分红': dividend_per_share,
+            '现金分红股息率': f"{dividend_yield:.2f}%",
             '分红年度': latest_dividend['分红年度'],
             '分红方案': latest_dividend['分红方案']
         }
