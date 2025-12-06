@@ -1,5 +1,5 @@
 import akshare as ak
-import sqlite3
+import psycopg2
 from db import get_db_connection
 from typing import List, Optional
 from dataclasses import dataclass
@@ -18,13 +18,10 @@ class StockBasicInfo:
     created_at: Optional[datetime] = None
 
 
-def sync_stock_basic_info(db_path: str = "stocks.db") -> List[StockBasicInfo]:
+def sync_stock_basic_info() -> List[StockBasicInfo]:
     """
     同步 akshare 的 stock_info_a_code_name 方法返回数据到 stock_basic_info 表中
     
-    Args:
-        db_path (str): 数据库文件路径，默认为 "stocks.db"
-        
     Returns:
         List[StockBasicInfo]: 同步的股票基本信息对象数组
     """
@@ -36,7 +33,10 @@ def sync_stock_basic_info(db_path: str = "stocks.db") -> List[StockBasicInfo]:
     
     try:
         # 获取数据库连接，使用临时表名
-        conn = get_db_connection(db_path, TEMP_TABLE_NAME)
+        conn = get_db_connection(TEMP_TABLE_NAME)
+        if not conn:
+            raise Exception("无法建立数据库连接")
+            
         cursor = conn.cursor()
         
         # 使用 akshare 获取所有股票代码和名称
@@ -60,9 +60,14 @@ def sync_stock_basic_info(db_path: str = "stocks.db") -> List[StockBasicInfo]:
             stock_objects.append(StockBasicInfo(code=code, name=name, market=market))
         
         # 批量插入或更新数据到临时表
+        # PostgreSQL 使用 ON CONFLICT 子句替代 INSERT OR REPLACE
         cursor.executemany(f'''
-            INSERT OR REPLACE INTO "{TEMP_TABLE_NAME}" (code, name, market)
-            VALUES (?, ?, ?)
+            INSERT INTO "{TEMP_TABLE_NAME}" (code, name, market)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (code) 
+            DO UPDATE SET 
+                name = EXCLUDED.name,
+                market = EXCLUDED.market
         ''', stock_data)
         
         conn.commit()
@@ -71,30 +76,31 @@ def sync_stock_basic_info(db_path: str = "stocks.db") -> List[StockBasicInfo]:
         # 将临时表重命名为正式表名
         try:
             # 先删除已存在的正式表（如果存在）
-            cursor.execute(f'DROP TABLE IF EXISTS "{TABLE_NAME}"')
+            cursor.execute(f'DROP TABLE IF EXISTS "{TABLE_NAME}" CASCADE')
             # 将临时表重命名为正式表名
             cursor.execute(f'ALTER TABLE "{TEMP_TABLE_NAME}" RENAME TO "{TABLE_NAME}"')
             conn.commit()
             print(f"成功将临时表 {TEMP_TABLE_NAME} 重命名为 {TABLE_NAME}")
-        except sqlite3.Error as e:
+        except psycopg2.Error as e:
             print(f"重命名表时发生错误: {e}")
         
     except Exception as e:
         print(f"同步股票基本信息时发生错误: {e}")
         stock_objects = []
     finally:
-        if 'conn' in locals():
+        # 先删除临时表
+        cursor.execute(f'DROP TABLE IF EXISTS "{TEMP_TABLE_NAME}" CASCADE')
+        if 'conn' in locals() and conn:
             conn.close()
             
     return stock_objects
 
 
-def sync_stock_share_change(db_path: str = "stocks.db", stocks: List[StockBasicInfo] = None) -> None:
+def sync_stock_share_change(stocks: List[StockBasicInfo] = None) -> None:
     """
     同步股票股本变动数据到 raw_share_change 表中
     
     Args:
-        db_path (str): 数据库文件路径
         stocks (List[StockBasicInfo]): 股票列表
     """
     if not stocks:
@@ -113,7 +119,10 @@ def sync_stock_share_change(db_path: str = "stocks.db", stocks: List[StockBasicI
     while retry_count < max_retries:
         try:
             # 获取数据库连接，使用临时表名
-            conn = get_db_connection(db_path, TEMP_TABLE_NAME)
+            conn = get_db_connection(TEMP_TABLE_NAME)
+            if not conn:
+                raise Exception("无法建立数据库连接")
+                
             cursor = conn.cursor()
             
             total_count = 0
@@ -142,12 +151,14 @@ def sync_stock_share_change(db_path: str = "stocks.db", stocks: List[StockBasicI
                         share_change_data.append(row_data)
                     
                     # 批量插入数据到临时表
+                    # PostgreSQL 使用 ON CONFLICT DO NOTHING 替代 INSERT OR REPLACE
                     cursor.executemany(f'''
-                        INSERT OR REPLACE INTO "{TEMP_TABLE_NAME}" (
+                        INSERT INTO "{TEMP_TABLE_NAME}" (
                             code, name, change_date, announce_date, total
                         ) VALUES (
-                            ?, ?, ?, ?, ?
+                            %s, %s, %s, %s, %s
                         )
+                        ON CONFLICT DO NOTHING
                     ''', share_change_data)
                     
                     total_count += len(share_change_data)
@@ -169,17 +180,17 @@ def sync_stock_share_change(db_path: str = "stocks.db", stocks: List[StockBasicI
             # 将临时表重命名为正式表名
             try:
                 # 先删除已存在的正式表（如果存在）
-                cursor.execute(f'DROP TABLE IF EXISTS "{TABLE_NAME}"')
+                cursor.execute(f'DROP TABLE IF EXISTS "{TABLE_NAME}" CASCADE')
                 # 将临时表重命名为正式表名
                 cursor.execute(f'ALTER TABLE "{TEMP_TABLE_NAME}" RENAME TO "{TABLE_NAME}"')
                 conn.commit()
                 print(f"成功将临时表 {TEMP_TABLE_NAME} 重命名为 {TABLE_NAME}")
-            except sqlite3.Error as e:
+            except psycopg2.Error as e:
                 print(f"重命名表时发生错误: {e}")
             
             break  # 成功执行后跳出重试循环
             
-        except sqlite3.OperationalError as e:
+        except psycopg2.OperationalError as e:
             if "database is locked" in str(e) and retry_count < max_retries - 1:
                 retry_count += 1
                 print(f"数据库被锁定，进行第 {retry_count} 次重试...")
@@ -191,16 +202,15 @@ def sync_stock_share_change(db_path: str = "stocks.db", stocks: List[StockBasicI
             print(f"同步股票股本变动数据时发生错误: {e}")
             break
         finally:
-            if 'conn' in locals():
+            if 'conn' in locals() and conn:
                 conn.close()
 
 
-def sync_stock_share_profit(db_path: str = "stocks.db", stocks: List[StockBasicInfo] = None) -> None:
+def sync_stock_share_profit(stocks: List[StockBasicInfo] = None) -> None:
     """
     同步股票分红数据到 raw_share_profit 表中
     
     Args:
-        db_path (str): 数据库文件路径
         stocks (List[StockBasicInfo]): 股票列表
     """
     if not stocks:
@@ -219,7 +229,10 @@ def sync_stock_share_profit(db_path: str = "stocks.db", stocks: List[StockBasicI
     while retry_count < max_retries:
         try:
             # 获取数据库连接，使用临时表名
-            conn = get_db_connection(db_path, TEMP_TABLE_NAME)
+            conn = get_db_connection(TEMP_TABLE_NAME)
+            if not conn:
+                raise Exception("无法建立数据库连接")
+                
             cursor = conn.cursor()
             
             total_count = 0
@@ -253,12 +266,14 @@ def sync_stock_share_profit(db_path: str = "stocks.db", stocks: List[StockBasicI
                         share_profit_data.append(row_data)
                     
                     # 批量插入数据到临时表
+                    # PostgreSQL 使用 ON CONFLICT DO NOTHING 替代 INSERT OR REPLACE
                     cursor.executemany(f'''
-                        INSERT OR REPLACE INTO "{TEMP_TABLE_NAME}" (
+                        INSERT INTO "{TEMP_TABLE_NAME}" (
                             code, name, reporting_period, announcement_date, dividend_amount, payout_ratio
                         ) VALUES (
-                            ?, ?, ?, ?, ?, ?
+                            %s, %s, %s, %s, %s, %s
                         )
+                        ON CONFLICT DO NOTHING
                     ''', share_profit_data)
                     
                     total_count += len(share_profit_data)
@@ -280,17 +295,17 @@ def sync_stock_share_profit(db_path: str = "stocks.db", stocks: List[StockBasicI
             # 将临时表重命名为正式表名
             try:
                 # 先删除已存在的正式表（如果存在）
-                cursor.execute(f'DROP TABLE IF EXISTS "{TABLE_NAME}"')
+                cursor.execute(f'DROP TABLE IF EXISTS "{TABLE_NAME}" CASCADE')
                 # 将临时表重命名为正式表名
                 cursor.execute(f'ALTER TABLE "{TEMP_TABLE_NAME}" RENAME TO "{TABLE_NAME}"')
                 conn.commit()
                 print(f"成功将临时表 {TEMP_TABLE_NAME} 重命名为 {TABLE_NAME}")
-            except sqlite3.Error as e:
+            except psycopg2.Error as e:
                 print(f"重命名表时发生错误: {e}")
             
             break  # 成功执行后跳出重试循环
             
-        except sqlite3.OperationalError as e:
+        except psycopg2.OperationalError as e:
             if "database is locked" in str(e) and retry_count < max_retries - 1:
                 retry_count += 1
                 print(f"数据库被锁定，进行第 {retry_count} 次重试...")
@@ -302,21 +317,20 @@ def sync_stock_share_profit(db_path: str = "stocks.db", stocks: List[StockBasicI
             print(f"同步股票分红数据时发生错误: {e}")
             break
         finally:
-            if 'conn' in locals():
+            if 'conn' in locals() and conn:
                 conn.close()
 
 
-def sync_stock(db_path: str = "stocks.db", batch_size: int = 50) -> None:
+def sync_stock(batch_size: int = 50) -> None:
     """
     协调股票数据同步过程
     
     Args:
-        db_path (str): 数据库文件路径
         batch_size (int): 批量处理大小（此参数在此版本中未使用，为了保持接口兼容性保留）
     """
     # 先同步股票基本信息
     print("开始同步股票基本信息...")
-    stocks = sync_stock_basic_info(db_path)
+    stocks = sync_stock_basic_info()
     
     if not stocks:
         print("未能获取股票基本信息，终止同步")
@@ -334,15 +348,16 @@ def sync_stock(db_path: str = "stocks.db", batch_size: int = 50) -> None:
         stocks_to_sync = stocks
     
     # 同步股票股本变动数据
-    sync_stock_share_change(db_path, stocks_to_sync)
+    sync_stock_share_change(stocks_to_sync)
     
     # 同步股票分红数据
     print(f"开始同步{len(stocks_to_sync)}只股票的分红数据...")
-    sync_stock_share_profit(db_path, stocks_to_sync)
+    sync_stock_share_profit(stocks_to_sync)
     
     print("股票数据同步完成")
 
 
 # 使用示例
 if __name__ == "__main__":
-   sync_stock()
+    # print(ak.stock_info_a_code_name())
+   sync_stock_basic_info()

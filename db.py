@@ -1,7 +1,8 @@
-import sqlite3
+import psycopg2
 import os
 import re
 from datetime import date, datetime
+from typing import Optional
 
 
 # 自定义日期适配器
@@ -24,38 +25,37 @@ def convert_timestamp(val):
     return datetime.fromisoformat(val.decode())
 
 
-# 注册自定义适配器和转换器
-sqlite3.register_adapter(date, adapt_date)
-sqlite3.register_adapter(datetime, adapt_datetime)
-sqlite3.register_converter("date", convert_date)
-sqlite3.register_converter("timestamp", convert_timestamp)
-
-
-def check_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+def check_table_exists(conn: psycopg2.extensions.connection, table_name: str,schema:str='public') -> bool:
     """
     检查表是否存在
     
     Args:
-        conn (sqlite3.Connection): 数据库连接对象
+        conn (psycopg2.extensions.connection): 数据库连接对象
         table_name (str): 表名
         
     Returns:
         bool: 表存在返回 True，否则返回 False
     """
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name=?", 
-        (table_name,)
-    )
-    return cursor.fetchone() is not None
+    # PostgreSQL 查询表是否存在的方式
+    cursor.execute("""
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_schema=%s and table_name = %s
+        );
+    """, (schema,table_name))
+    
+    exists = cursor.fetchone()[0]
+    cursor.close()
+    return exists
 
 
-def create_tables(conn: sqlite3.Connection, sql_file_path: str, table_name: str) -> bool:
+def create_tables(conn: psycopg2.extensions.connection, sql_file_path: str, table_name: str) -> bool:
     """
     从SQL文件创建表
     
     Args:
-        conn (sqlite3.Connection): 数据库连接对象
+        conn (psycopg2.extensions.connection): 数据库连接对象
         sql_file_path (str): SQL文件路径
         table_name (str): 实际要创建的表名
         
@@ -84,7 +84,7 @@ def create_tables(conn: sqlite3.Connection, sql_file_path: str, table_name: str)
                 sql_content_modified = re.sub(pattern, replacement, sql_content, flags=re.IGNORECASE)
                 
                 # 匹配 CREATE INDEX 语句中的表名
-                pattern_idx = rf'(CREATE\s+INDEX(?:\s+IF\s+NOT\s+EXISTS)?\s+\w+\s+ON\s+){re.escape(base_table_name)}'
+                pattern_idx = rf'(CREATE\s+(?:UNIQUE\s+)?INDEX(?:\s+IF\s+NOT\s+EXISTS)?\s+\w+\s+ON\s+){re.escape(base_table_name)}'
                 replacement_idx = f'\\1"{table_name}"'
                 sql_content_modified = re.sub(pattern_idx, replacement_idx, sql_content_modified, flags=re.IGNORECASE)
             else:
@@ -93,14 +93,22 @@ def create_tables(conn: sqlite3.Connection, sql_file_path: str, table_name: str)
                 replacement = r'\1"\2"'
                 sql_content_modified = re.sub(pattern, replacement, sql_content, flags=re.IGNORECASE)
                 
-                pattern_idx = r'(CREATE\s+INDEX(?:\s+IF\s+NOT\s+EXISTS)?\s+\w+\s+ON\s+)(\w+)'
+                pattern_idx = r'(CREATE\s+(?:UNIQUE\s+)?INDEX(?:\s+IF\s+NOT\s+EXISTS)?\s+\w+\s+ON\s+)(\w+)'
                 replacement_idx = r'\1"\2"'
                 sql_content_modified = re.sub(pattern_idx, replacement_idx, sql_content_modified, flags=re.IGNORECASE)
             
             # 执行修改后的SQL脚本
             cursor = conn.cursor()
-            cursor.executescript(sql_content_modified)
+            # PostgreSQL 不支持 executescript，需要逐条执行
+            # 分割 SQL 语句，注意处理可能在引号内的分号
+            statements = sql_content_modified.split(';')
+            for statement in statements:
+                statement = statement.strip()
+                if statement:
+                    cursor.execute(statement)
+            
             conn.commit()
+            cursor.close()
             print("SQL脚本执行完成")
             return True
         else:
@@ -111,62 +119,69 @@ def create_tables(conn: sqlite3.Connection, sql_file_path: str, table_name: str)
         return False
 
 
-def get_db_connection(db_path: str, table_name: str) -> sqlite3.Connection:
+db_config = {
+    'host': 'localhost',
+    'port': 5432,
+    'dbname': 'stocks',
+    'user': 'postgres',
+    'password': '123456'
+}
+
+def get_db_connection(table_name: str) -> Optional[psycopg2.extensions.connection]:
     """
-    获取SQLite数据库连接，如果数据库文件不存在则创建新文件，
-    如果表不存在则创建对应表
+    获取PostgreSQL数据库连接，如果表不存在则创建对应表
     
     Args:
-        db_path (str): 数据库文件的相对路径
+        db_config (dict): 数据库配置，包括 host, port, dbname, user, password 等
         table_name (str): 表名
         
     Returns:
-        sqlite3.Connection: 数据库连接对象
+        psycopg2.extensions.connection: 数据库连接对象，如果失败返回 None
     """
-    # 检查数据库文件是否存在
-    db_exists = os.path.exists(db_path)
-    
-    # 连接数据库（如果文件不存在会自动创建）
-    # 使用自定义类型检测标志来启用转换器
-    conn = sqlite3.connect(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
-    
-    # 检查表是否存在，如果不存在则创建
-    if not check_table_exists(conn, table_name):
-        print("检测到表不存在，正在创建表...")
-        # 检查表名是否以 -数字 结尾
-        match = re.match(r'^(.+)-(\d+)$', table_name)
-        if match:
-            # 提取 -数字 前部分作为基础表名
-            base_table_name = match.group(1)
-            # 拼接 initsql 路径
-            sql_file_path = f"./initsql/{base_table_name}.sql"
-        else:
-            sql_file_path = f"./initsql/{table_name}.sql"
-            
-        # 尝试从SQL文件创建表
-        if not create_tables(conn, sql_file_path, table_name):
-            # 如果SQL文件不存在或执行失败，使用默认建表语句
-            print("使用默认建表语句...")
-            cursor = conn.cursor()
-            
-            conn.commit()
-            print("数据库表创建完成")
+    try:
+        # 连接数据库
+        conn = psycopg2.connect(**db_config)
         
-    return conn
+        # 检查表是否存在，如果不存在则创建
+        if not check_table_exists(conn, table_name):
+            print(f"检测到表 {table_name} 不存在，正在创建表...")
+            # 检查表名是否以 -数字 结尾
+            match = re.match(r'^(.+)-(\d+)$', table_name)
+            if match:
+                # 提取 -数字 前部分作为基础表名
+                base_table_name = match.group(1)
+                # 拼接 initsql 路径
+                sql_file_path = f"./initsql/{base_table_name}.sql"
+            else:
+                sql_file_path = f"./initsql/{table_name}.sql"
+                
+            # 尝试从SQL文件创建表
+            if not create_tables(conn, sql_file_path, table_name):
+                # 如果SQL文件不存在或执行失败，使用默认建表语句
+                print("使用默认建表语句...")
+                conn.commit()
+                print("数据库表创建完成")
+            
+        return conn
+    except Exception as e:
+        print(f"连接数据库失败: {e}")
+        return None
 
 
-
-def drop_tables_with_numeric_suffix(conn: sqlite3.Connection) -> None:
+def drop_tables_with_numeric_suffix(conn: psycopg2.extensions.connection) -> None:
     """
     删除数据库中带有数字后缀的表
     
     Args:
-        conn (sqlite3.Connection): 数据库连接对象
+        conn (psycopg2.extensions.connection): 数据库连接对象
     """
     cursor = conn.cursor()
     
     # 获取所有表名
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    cursor.execute("""
+        SELECT table_name FROM information_schema.tables 
+        WHERE table_schema = 'public'
+    """)
     tables = cursor.fetchall()
     
     # 筛选出带有数字后缀的表（格式为：表名-数字）
@@ -180,26 +195,30 @@ def drop_tables_with_numeric_suffix(conn: sqlite3.Connection) -> None:
     # 删除这些表
     for table_name in tables_to_drop:
         print(f"正在删除表: {table_name}")
-        cursor.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+        cursor.execute(f'DROP TABLE IF EXISTS "{table_name}" CASCADE')
     
     conn.commit()
+    cursor.close()
     if tables_to_drop:
         print(f"已删除 {len(tables_to_drop)} 个带有数字后缀的表: {tables_to_drop}")
     else:
         print("没有找到带有数字后缀的表")
 
+
 # 使用示例
 if __name__ == "__main__":
     # 获取数据库连接
-    conn = get_db_connection("stocks.db", "raw_basic_info")
+    conn = get_db_connection("raw_basic_info")
     
-    # 测试数据库连接
-    cursor = conn.cursor()
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    tables = cursor.fetchall()
-    print("当前数据库中的表:", [table[0] for table in tables])
+    if conn:
+        # 测试数据库连接
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT table_name FROM information_schema.tables 
+            WHERE table_schema = 'public'
+        """)
+        tables = cursor.fetchall()
+        print("当前数据库中的表:", [table[0] for table in tables])
+        cursor.close()
 
-    # 测试删除临时表
-    drop_tables_with_numeric_suffix(conn)
     
-    conn.close()
