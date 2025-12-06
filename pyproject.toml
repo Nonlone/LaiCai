@@ -1,0 +1,9 @@
+[project]
+name = "lai-cai"
+version = "0.1.0"
+description = "Leek Of Tortoise"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "akshare>=1.17.91",
+]
