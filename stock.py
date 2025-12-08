@@ -96,6 +96,17 @@ def sync_stock_basic_info() -> List[StockBasicInfo]:
     return stock_objects
 
 
+
+def sync_stock_detail(info: StockBasicInfo) -> None:
+    """
+    同步股票详情数据到 raw_stock_detail 表中
+    """
+    if not info or info is None:
+        print("未提供股票信息，终止同步")
+        return
+    
+
+
 def sync_stock_share_change(stocks: List[StockBasicInfo] = None) -> None:
     """
     同步股票股本变动数据到 raw_share_change 表中
