@@ -1,7 +1,7 @@
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.2
 aiosignal==1.4.0
-akshare==1.17.89
+akshare==1.17.93
 attrs==25.4.0
 beautifulsoup4==4.14.2
 certifi==2025.11.12
@@ -20,9 +20,11 @@ numpy==2.3.5
 openpyxl==3.1.5
 pandas==2.3.3
 propcache==0.4.1
+PyMySQL==1.1.2
 python-dateutil==2.9.0.post0
 pytz==2025.2
 requests==2.32.5
+setuptools==80.9.0
 six==1.17.0
 soupsieve==2.8
 tabulate==0.9.0

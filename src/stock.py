@@ -1,6 +1,6 @@
 import akshare as ak
-import psycopg2
-from db import get_db_connection
+import pymysql
+from src.db import get_db_connection
 from typing import List, Optional
 from dataclasses import dataclass
 from datetime import datetime
@@ -60,14 +60,13 @@ def sync_stock_basic_info() -> List[StockBasicInfo]:
             stock_objects.append(StockBasicInfo(code=code, name=name, market=market))
         
         # 批量插入或更新数据到临时表
-        # PostgreSQL 使用 ON CONFLICT 子句替代 INSERT OR REPLACE
+        # MariaDB 使用 ON DUPLICATE KEY UPDATE 子句替代 INSERT OR REPLACE
         cursor.executemany(f'''
-            INSERT INTO "{TEMP_TABLE_NAME}" (code, name, market)
+            INSERT INTO `{TEMP_TABLE_NAME}` (code, name, market)
             VALUES (%s, %s, %s)
-            ON CONFLICT (code) 
-            DO UPDATE SET 
-                name = EXCLUDED.name,
-                market = EXCLUDED.market
+            ON DUPLICATE KEY UPDATE 
+                name = VALUES(name),
+                market = VALUES(market)
         ''', stock_data)
         
         conn.commit()
@@ -76,12 +75,12 @@ def sync_stock_basic_info() -> List[StockBasicInfo]:
         # 将临时表重命名为正式表名
         try:
             # 先删除已存在的正式表（如果存在）
-            cursor.execute(f'DROP TABLE IF EXISTS "{TABLE_NAME}" CASCADE')
+            cursor.execute('DROP TABLE IF EXISTS `%s`' % TABLE_NAME)
             # 将临时表重命名为正式表名
-            cursor.execute(f'ALTER TABLE "{TEMP_TABLE_NAME}" RENAME TO "{TABLE_NAME}"')
+            cursor.execute('RENAME TABLE `%s` TO `%s`' % (TEMP_TABLE_NAME, TABLE_NAME))
             conn.commit()
             print(f"成功将临时表 {TEMP_TABLE_NAME} 重命名为 {TABLE_NAME}")
-        except psycopg2.Error as e:
+        except Exception as e:
             print(f"重命名表时发生错误: {e}")
         
     except Exception as e:
@@ -89,7 +88,7 @@ def sync_stock_basic_info() -> List[StockBasicInfo]:
         stock_objects = []
     finally:
         # 先删除临时表
-        cursor.execute(f'DROP TABLE IF EXISTS "{TEMP_TABLE_NAME}" CASCADE')
+        cursor.execute('DROP TABLE IF EXISTS `%s`' % TEMP_TABLE_NAME)
         if 'conn' in locals() and conn:
             conn.close()
             
@@ -99,12 +98,132 @@ def sync_stock_basic_info() -> List[StockBasicInfo]:
 
 def sync_stock_detail(info: StockBasicInfo) -> None:
     """
-    同步股票详情数据到 raw_stock_detail 表中
-    """
-    if not info or info is None:
-        print("未提供股票信息，终止同步")
-        return
+    同步单个股票的详细信息
     
+    Args:
+        info (StockBasicInfo): 股票基本信息对象
+    """
+    # 添加适当的延迟以避免触发反爬机制
+    time.sleep(1)
+    
+    try:
+        # 获取分红数据
+        df = ak.stock_fhps_detail_em(info.code)
+        
+        if df.empty:
+            print(f"股票 {info.code} 没有分红数据")
+            return
+            
+        # 定义表名常量
+        TABLE_NAME = "raw_share_profit"
+        # 生成临时表名，格式为原表名-随机数（符合 db.py 中的处理逻辑）
+        TEMP_TABLE_NAME = f"{TABLE_NAME}-{random.randint(100, 999)}"
+        
+        # 获取数据库连接，使用临时表名
+        conn = get_db_connection(TEMP_TABLE_NAME)
+        if not conn:
+            raise Exception("无法建立数据库连接")
+            
+        cursor = conn.cursor()
+        
+        # 准备插入数据
+        columns = ['code', 'dividend_date', 'registration_date', 'dividend_rate', 'undistributed_profit',
+                   'earnings_per_share', 'capital_reserve', 'dividend_ratio', 'announcement_date']
+        insert_sql = f'''
+            INSERT INTO `{TEMP_TABLE_NAME}` ({','.join(columns)})
+            VALUES ({','.join(['%s'] * len(columns))})
+            ON DUPLICATE KEY UPDATE 
+                dividend_date = VALUES(dividend_date),
+                registration_date = VALUES(registration_date),
+                dividend_rate = VALUES(dividend_rate),
+                undistributed_profit = VALUES(undistributed_profit),
+                earnings_per_share = VALUES(earnings_per_share),
+                capital_reserve = VALUES(capital_reserve),
+                dividend_ratio = VALUES(dividend_ratio),
+                announcement_date = VALUES(announcement_date)
+        '''
+        
+        inserted_count = 0
+        for _, row in df.iterrows():
+            if pd.isna(row.get('除权除息日')):
+                # 如果除权除息日不是时间则跳过
+                continue
+                
+            dividend_date = row.get('除权除息日').strftime("%Y-%m-%d") if not pd.isna(row.get('除权除息日')) else None
+            registration_date = row.get('股权登记日').strftime("%Y-%m-%d") if not pd.isna(row.get('股权登记日')) else None
+            announcement_date = row.get('预案公告日').strftime("%Y-%m-%d") if not pd.isna(row.get('预案公告日')) else None
+            
+            values = (
+                info.code,
+                dividend_date,
+                registration_date,
+                row.get('现金分红-股息率'),
+                row.get('每股未分配利润'),
+                row.get('每股收益'),
+                row.get('每股公积金'),
+                row.get('现金分红-现金分红比例'),
+                announcement_date
+            )
+            
+            try:
+                cursor.execute(insert_sql, values)
+                inserted_count += 1
+            except Exception as e:
+                print(f"插入股票 {info.code} 数据时发生错误: {e}")
+                continue
+                
+        conn.commit()
+        print(f"成功插入股票 {info.code} 的 {inserted_count} 条分红数据到临时表 {TEMP_TABLE_NAME}")
+        
+        # 将临时表数据合并到正式表中
+        try:
+            # 将临时表重命名为正式表名
+            cursor.execute('DROP TABLE IF EXISTS `%s`' % TABLE_NAME)
+            cursor.execute('RENAME TABLE `%s` TO `%s`' % (TEMP_TABLE_NAME, TABLE_NAME))
+            conn.commit()
+            print(f"成功将临时表 {TEMP_TABLE_NAME} 重命名为 {TABLE_NAME}")
+        except Exception as e:
+            print(f"重命名表时发生错误: {e}")
+            
+    except Exception as e:
+        print(f"同步股票 {info.code} 详细信息时发生错误: {e}")
+    finally:
+        # 先删除临时表
+        cursor.execute('DROP TABLE IF EXISTS `%s`' % TEMP_TABLE_NAME)
+        if 'conn' in locals() and conn:
+            conn.close()
+
+
+def sync_stock_dividend() -> None:
+    """
+    同步股票分红信息
+    """
+    try:
+        # 获取数据库连接
+        conn = get_db_connection("raw_basic_info")
+        if not conn:
+            raise Exception("无法建立数据库连接")
+            
+        cursor = conn.cursor()
+        
+        # 从数据库获取股票基本信息
+        cursor.execute("SELECT code, name, market FROM raw_basic_info")
+        stocks = cursor.fetchall()
+        
+        # 随机选择最多100只股票进行同步，避免过多的API请求
+        selected_stocks = random.sample(stocks, min(100, len(stocks))) if len(stocks) > 100 else stocks
+        
+        print(f"开始同步 {len(selected_stocks)} 只股票的分红信息...")
+        
+        for stock in selected_stocks:
+            info = StockBasicInfo(code=stock[0], name=stock[1], market=stock[2])
+            sync_stock_detail(info)
+            
+    except Exception as e:
+        print(f"同步股票分红信息时发生错误: {e}")
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
 
 
 def sync_stock_share_change(stocks: List[StockBasicInfo] = None) -> None:

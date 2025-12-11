@@ -8,15 +8,13 @@ def stock_day_detail(symbol: str,date=str) -> float:
     获取某个股票某天行情
     """
     # 获取数据
-    df = ak.stock_zh_a_hist(
+    df = ak.stock_zh_a_hist_tx(
         symbol=symbol,
-        period="daily",  # 日频数据
         start_date=date,
         end_date=date,
-        adjust="qfq"  # 前复权
     )
     for _, row in df.iterrows():
-       finish_price = row.get('收盘价')
+       finish_price = row.get('close')
        if finish_price:
            return finish_price
     return 
@@ -29,9 +27,6 @@ def stock_day_detail(symbol: str,date=str) -> float:
 if __name__ == "__main__":
     # 使用示例
     symbol = "601006"
-    finish_price  = stock_day_detail(symbol,"20070618")
-    if not finish_price:
-        print("没有获取到数据")
 
     result = ak.stock_fhps_detail_em(symbol)
     print(result)
@@ -44,18 +39,19 @@ if __name__ == "__main__":
             #  如果除权除息日不是时间则跳过
             continue
         divide_date = row.get('除权除息日').strftime("%Y%m%d")
-        stock_detail = stock_day_detail(symbol, divide_date)
+        # stock_detail = stock_day_detail(symbol, divide_date)
+        print(divide_date)
        
 
         row_data = ()
         for i in columns:
             row_data += (row.get(i),)
 
-        row_data += stock_detail
+        # row_data += stock_detail
         
         process_data.append(row_data)
 
-    process_data = pd.DataFrame(process_data, columns=columns.append(['股票收盘价']))
+    process_data = pd.DataFrame(process_data, columns=columns)
     process_data = process_data.sort_values(by='除权除息日', ascending=False)
     process_data = process_data.reset_index(drop=True)
     # 输出对其列的数据
@@ -80,6 +76,9 @@ if __name__ == "__main__":
     # 输出对其列的数据
     # print(process_data)
 
-    
+
+    finish_price  = stock_day_detail("sh"+symbol,"20250711")
+    print(finish_price)
+
 
 

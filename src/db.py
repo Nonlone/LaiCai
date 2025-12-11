@@ -1,4 +1,4 @@
-import psycopg2
+import pymysql
 import os
 import re
 from datetime import date, datetime
@@ -25,37 +25,36 @@ def convert_timestamp(val):
     return datetime.fromisoformat(val.decode())
 
 
-def check_table_exists(conn: psycopg2.extensions.connection, table_name: str,schema:str='public') -> bool:
+def check_table_exists(conn: pymysql.connections.Connection, table_name: str) -> bool:
     """
     检查表是否存在
     
     Args:
-        conn (psycopg2.extensions.connection): 数据库连接对象
+        conn (pymysql.connections.Connection): 数据库连接对象
         table_name (str): 表名
         
     Returns:
         bool: 表存在返回 True，否则返回 False
     """
     cursor = conn.cursor()
-    # PostgreSQL 查询表是否存在的方式
+    # MariaDB 查询表是否存在的方式
     cursor.execute("""
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_schema=%s and table_name = %s
-        );
-    """, (schema,table_name))
+        SELECT COUNT(*) 
+        FROM information_schema.tables 
+        WHERE table_schema = DATABASE() AND table_name = %s
+    """, (table_name,))
     
-    exists = cursor.fetchone()[0]
+    exists = cursor.fetchone()[0] > 0
     cursor.close()
     return exists
 
 
-def create_tables(conn: psycopg2.extensions.connection, sql_file_path: str, table_name: str) -> bool:
+def create_tables(conn: pymysql.connections.Connection, sql_file_path: str, table_name: str) -> bool:
     """
     从SQL文件创建表
     
     Args:
-        conn (psycopg2.extensions.connection): 数据库连接对象
+        conn (pymysql.connections.Connection): 数据库连接对象
         sql_file_path (str): SQL文件路径
         table_name (str): 实际要创建的表名
         
@@ -119,28 +118,28 @@ def create_tables(conn: psycopg2.extensions.connection, sql_file_path: str, tabl
         return False
 
 
-db_config = {
+maria_db_config = {
     'host': 'localhost',
-    'port': 5432,
-    'dbname': 'stocks',
-    'user': 'postgres',
-    'password': '123456'
+    'port': 3306,
+    'database': 'LaiCai',
+    'user': 'root',
+    'password': '123456',
+    'charset': 'utf8mb4'
 }
 
-def get_db_connection(table_name: str) -> Optional[psycopg2.extensions.connection]:
+def get_db_connection(table_name: str) -> Optional[pymysql.connections.Connection]:
     """
-    获取PostgreSQL数据库连接，如果表不存在则创建对应表
+    获取MariaDB数据库连接，如果表不存在则创建对应表
     
     Args:
-        db_config (dict): 数据库配置，包括 host, port, dbname, user, password 等
         table_name (str): 表名
         
     Returns:
-        psycopg2.extensions.connection: 数据库连接对象，如果失败返回 None
+        pymysql.connections.Connection: 数据库连接对象，如果失败返回 None
     """
     try:
         # 连接数据库
-        conn = psycopg2.connect(**db_config)
+        conn = pymysql.connect(**maria_db_config)
         
         # 检查表是否存在，如果不存在则创建
         if not check_table_exists(conn, table_name):
@@ -158,9 +157,8 @@ def get_db_connection(table_name: str) -> Optional[psycopg2.extensions.connectio
             # 尝试从SQL文件创建表
             if not create_tables(conn, sql_file_path, table_name):
                 # 如果SQL文件不存在或执行失败，使用默认建表语句
-                print("使用默认建表语句...")
                 conn.commit()
-                print("数据库表创建完成")
+                print("数据库表创失败")
             
         return conn
     except Exception as e:
@@ -168,19 +166,19 @@ def get_db_connection(table_name: str) -> Optional[psycopg2.extensions.connectio
         return None
 
 
-def drop_tables_with_numeric_suffix(conn: psycopg2.extensions.connection) -> None:
+def drop_tables_with_numeric_suffix(conn: pymysql.connections.Connection) -> None:
     """
     删除数据库中带有数字后缀的表
     
     Args:
-        conn (psycopg2.extensions.connection): 数据库连接对象
+        conn (pymysql.connections.Connection): 数据库连接对象
     """
     cursor = conn.cursor()
     
     # 获取所有表名
     cursor.execute("""
         SELECT table_name FROM information_schema.tables 
-        WHERE table_schema = 'public'
+        WHERE table_schema = DATABASE()
     """)
     tables = cursor.fetchall()
     
@@ -195,7 +193,7 @@ def drop_tables_with_numeric_suffix(conn: psycopg2.extensions.connection) -> Non
     # 删除这些表
     for table_name in tables_to_drop:
         print(f"正在删除表: {table_name}")
-        cursor.execute(f'DROP TABLE IF EXISTS "{table_name}" CASCADE')
+        cursor.execute('DROP TABLE IF EXISTS `%s`' % table_name)
     
     conn.commit()
     cursor.close()
@@ -215,10 +213,10 @@ if __name__ == "__main__":
         cursor = conn.cursor()
         cursor.execute("""
             SELECT table_name FROM information_schema.tables 
-            WHERE table_schema = 'public'
+            WHERE table_schema = DATABASE()
         """)
         tables = cursor.fetchall()
         print("当前数据库中的表:", [table[0] for table in tables])
         cursor.close()
-
-    
+        
+        conn.close()
