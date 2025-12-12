@@ -14,11 +14,10 @@ func syncBasicInfo(infos []*BasicInfo) error {
 	db := sqlx.NewDb(db.RawConn(), "mysql")
 
 	_, err := db.NamedExec(`
-		 INSERT INTO raw_basic_info (code, name, market, created_at)
-            VALUES (:code, :name, :market,:created_at)
+		 INSERT INTO raw_basic_info (code, name, market, created_at, updated_at)
+            VALUES (:code, :name, :market,:created_at,:updated_at)
             ON DUPLICATE KEY UPDATE 
-                name = VALUES(name),
-                market = VALUES(market)
+				updated_at = VALUES(updated_at)
 	`, infos)
 
 	return err

@@ -4,36 +4,47 @@ import "time"
 
 type marketType string
 
-const (	
+const (
 	Unknown marketType = "Unknown"
-	SH marketType = "SH"
-	SZ marketType = "SZ"
+	SH      marketType = "SH"
+	SZ      marketType = "SZ"
 )
 
-
-type BasicInfo struct {
+type stock struct {
 	Code string `json:"code" db:"code"`
 	Name string `json:"name" db:"name"`
-	Market marketType `json:"market" db:"market"`
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
 }
 
+func (s *stock) Market() marketType {
+	if s.Code[0] == '6' {
+		return SH
+	} else if s.Code[0] == '0' || s.Code[0] == '3' {
+		return SZ
+	}
+	return Unknown
+
+}
+
+type BasicInfo struct {
+	stock
+	Market marketType `json:"market" db:"market"`
+	audit
+}
 
 func NewBasicInfo(code string, name string) *BasicInfo {
-	result := &BasicInfo{
+	now := time.Now()
+	s := &stock{
 		Code: code,
 		Name: name,
-		CreatedAt: time.Now(),
 	}
-
-	if code[0] == '6' {
-		result.Market = SH
-	} else if code[0] == '0' || code[0] == '3' {
-		result.Market = SZ
-	} else {
-		result.Market = Unknown
+	result := &BasicInfo{
+		stock:  *s,
+		Market: s.Market(),
+		audit: audit{
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
 	}
 
 	return result
 }
-
