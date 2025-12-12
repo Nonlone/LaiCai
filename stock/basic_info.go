@@ -5,7 +5,7 @@ import "time"
 type marketType string
 
 const (	
-	UnKown marketType = "UnKown"
+	Unknown marketType = "Unknown"
 	SH marketType = "SH"
 	SZ marketType = "SZ"
 )
@@ -31,7 +31,7 @@ func NewBasicInfo(code string, name string) *BasicInfo {
 	} else if code[0] == '0' || code[0] == '3' {
 		result.Market = SZ
 	} else {
-		result.Market = UnKown
+		result.Market = Unknown
 	}
 
 	return result
