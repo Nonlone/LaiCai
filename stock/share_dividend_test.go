@@ -76,4 +76,12 @@ func TestSyncShareDividendSat(t *testing.T) {
 		t.Error(err)
 		t.FailNow()
 	}
+
+	sdsl := calToShareDividendSatLatest(sdss)
+	if sdsl == nil {
+		t.Error("sdsl is nil")
+		t.FailNow()
+	}
+	
+	err = syncShareDividendSatLatest(sdsl)
 }

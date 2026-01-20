@@ -42,3 +42,23 @@ func syncShareDividendSat(sdss []*ShareDividendSat) error {
 
 	return err
 }
+
+
+func syncShareDividendSatLatest(sdsl *ShareDividendSatLastest) error {
+	if sdsl == nil {
+		return nil
+	}	
+
+	db := sqlx.NewDb(db.RawConn(),"mysql")
+	_, err := db.NamedExec(`
+		INSERT INTO cal_share_dividend_sat_latest (code, name, lastest_year, lastest_share_sum_per_stock, share_count_years, share_sum_per_stock_avg, created_at, updated_at)
+		VALUES (:code, :name, :lastest_year, :lastest_share_sum_per_stock, :share_count_years, :share_sum_per_stock_avg, :created_at, :updated_at) 
+		ON DUPLICATE KEY UPDATE 
+			updated_at=VALUES(updated_at),
+			lastest_year=VALUES(lastest_year),
+			lastest_share_sum_per_stock=VALUES(lastest_share_sum_per_stock),
+			share_count_years=VALUES(share_count_years),
+			share_sum_per_stock_avg=VALUES(share_sum_per_stock_avg)
+	`,sdsl)
+	return err
+}
